@@ -1,7 +1,6 @@
 using DataStructures, Logging
 
 include("structs.jl")
-include("gpu_batch.jl")
 """
 #Ideally, syntax will eventually look something like this (for Collatz)
 @init 1:1024
@@ -169,13 +168,27 @@ end
 For a cpu frame, compute `decider` for each element and move to `t_frame` if
 true and to `f_frame` if false
 """
-function split!(frame :: Frame, t_frame :: Frame, f_frame :: Frame, decider)
-    for i in 1:length(frame)
-        if frame[i] |> decider
-            push!(t_frame, frame[i])
-        else
-            push!(f_frame, frame[i])
+function split!(frame :: Frame{T}, t_frame :: Frame{T}, decider, frame_pool) where T
+    sort!(frame.cells; by=x -> (!is_valid(x), decider(x)))
+    #map(x -> x.value, frame.cells)
+    partition = findfirst(cell -> is_valid(cell) && decider(cell), frame.cells )
+    if isnothing(partition)
+        # nothing to move to t_frame
+    elseif partition == 1
+        # swap
+        frame.cells, t_frame.cells = t_frame.cells, frame.cells
+        frame.count, t_frame.count = t_frame.count, frame.count
+        t_frame.age = frame.age
+    else
+        n_max = frame.count
+        n_false = partition - 1
+        n_true = n_max - n_false
+        t_frame.cells[1:n_true] .= frame.cells[partition:n_max]
+        @simd for i in partition:n_max
+            frame.cells[i] = Cell{T}(frame_pool.default_value, 0, -1)
         end
+        frame.count = n_false
+        t_frame.count = n_true
     end
 end
 
@@ -229,20 +242,26 @@ end
 
 function execute_batch(program :: Program{T, U}, src, dest :: Tuple{Symbol, Symbol}) where {T, U}
     t_frame = fetch!(program.pool)
-    f_frame = fetch!(program.pool)
     frame = pop!(program, src)
     #@debug "Frame count: $(length(frame))"
-    split!(frame, t_frame, f_frame, program.value_functions[src])
-    reallocate!(program.pool, frame)
-    push!(program, dest[1], t_frame)
-    push!(program, dest[2], f_frame)
+    split!(frame, t_frame, program.value_functions[src], program.pool)
+    #reallocate!(program.pool, frame)
+    if length(t_frame) > 0
+        push!(program, dest[1], t_frame)
+    else
+        reallocate!(program.pool, t_frame)
+    end
+    if length(frame) > 0
+        push!(program, dest[2], frame)
+    else
+        reallocate!(program.pool, frame)
+    end
 end
 
 
 function Base.run(program :: Program)
     stack_name = get_stack_name(program)
     while stack_name != :PROGRAM_TERMINATED
-    #    @debug "Running $stack_name"
         execute_batch(program, stack_name, program.flow[stack_name])
         stack_name = get_stack_name(program)
     end

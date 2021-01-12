@@ -2,6 +2,7 @@ using Test
 
 include("../ragamuffin.jl")
 
+@testset "Ragamuffin" begin
 
 """
 This verifies that Cell, Frame, and FramePool play nicely
@@ -59,4 +60,42 @@ function test_init()
 end
 
 test_init()
-@info "passed"
+
+function test_split(T, decider, frame_type, frame_size, n)
+    @assert n <= frame_size
+    F = frame_type{T, frame_size}
+    frame_pool = FramePool{T, F}(T(0))
+    frame = fetch!(frame_pool)
+    t_frame = fetch!(frame_pool)
+    for i in 1:n
+        push!(frame, Cell{T}(rand(T), 1, 1))
+    end
+    get_counter(frame) = counter(map(cell -> cell.value, filter(is_valid, frame.cells)))
+    original_counter = get_counter(frame)
+
+    split!(frame :: Frame{T}, t_frame :: Frame{T}, decider, frame_pool)
+    # first ensure the count is right
+    @test count(map(is_valid, frame.cells)) == length(frame)
+    # then ensure they are all at the beginning
+    @test count(map(is_valid, frame.cells[1:length(frame)])) == length(frame)
+    # do the same for the other frame
+    @test count(map(is_valid, t_frame.cells)) == length(t_frame)
+    @test count(map(is_valid, t_frame.cells[1:length(t_frame)])) == length(t_frame)
+    # finally make sure the total count of each element was preserved
+    @test merge(get_counter(frame), get_counter(t_frame)) == original_counter
+end
+
+test_split(Int32, cell -> false, Frame, 32, 18)
+test_split(Int32, cell -> false, Frame, 32, 32)
+test_split(Int32, cell -> false, Frame, 32, 0)
+
+test_split(Int32, cell -> true, Frame, 32, 18)
+test_split(Int32, cell -> true, Frame, 32, 32)
+test_split(Int32, cell -> true, Frame, 32, 0)
+
+test_split(Int32, cell -> isodd(cell.value), Frame, 32, 18)
+test_split(Int32, cell -> isodd(cell.value), Frame, 32, 32)
+test_split(Int32, cell -> isodd(cell.value), Frame, 32, 0)
+
+
+end
